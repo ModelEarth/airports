@@ -1,0 +1,16 @@
+# 2-char comma-separated list (or YAML list) of state abbreviations
+STATE: GA
+
+# Path to CSV containing city rows to update with AirportsNearby
+CITY_ROWS: display/data/cities/us-ga-cities.csv
+
+# Wikipedia URL template. Use {statename} for full state name.
+# Example exception: https://en.wikipedia.org/wiki/List_of_airports_in_New_York_(state)
+WIKIPEDIA_AIRPORT_STATE: "https://en.wikipedia.org/wiki/List_of_airports_in_{statename}_(U.S._state)"
+
+# Templates use lowercase {country} and {state}
+KML_LATITUDE_LONGITUDE: "{country}/{state}/{state}.kml"
+RUNWAY_DATA: runways.csv
+COUNTRY: us
+OUTPUT: "../{country}/{state}/{state}.csv"
+REPORT_OUTPUT: pull-report.md

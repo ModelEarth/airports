@@ -1,0 +1,17 @@
+*data_raw*
+*-update/*
+build/
+node_modules/
+dist/
+.vscode/
+.DS_Store
+.env
+env/
+env
+.venv
+.flaskenv
+flask.log
+*.pyc
+*.pyo
+__pycache__
+.~lock.*#

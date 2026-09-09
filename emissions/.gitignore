@@ -1,0 +1,4 @@
+data/
+output/
+credentials.json
+.env

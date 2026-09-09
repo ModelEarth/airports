@@ -1,0 +1,17 @@
+# Paths resolve relative to this file, like pipeline/config.yaml.
+COUNTRY: us
+STATE: GA
+# Existing aviation-emissions exports: flights_YYYYMMDD.csv (dep/arr) or raw
+# OpenSky CSVs (estDepartureAirport/estArrivalAirport). Comma-delimited, UTF-8.
+FLIGHTS: "data/flights_*.csv"
+AIRPORT_CATALOG: data/ourairports_airports.csv
+# Download only with --refresh-airports. Flight data is processed locally.
+AIRPORT_CATALOG_URL: https://ourairports.com/data/airports.csv
+AIRPORT_DIRECTORY: "../{country}/{state}/{state}.csv"
+# Optional inclusive UTC departure-date range; null means all input records.
+START_DATE: null
+END_DATE: null
+FUEL_KG_PER_KM: 3.0
+FIXED_FUEL_KG: 500.0
+CO2_KG_PER_KG_FUEL: 3.16
+OUTPUT: output

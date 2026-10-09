@@ -15,3 +15,6 @@ FUEL_KG_PER_KM: 3.0
 FIXED_FUEL_KG: 500.0
 CO2_KG_PER_KG_FUEL: 3.16
 OUTPUT: output
+# Optional: with --publish, also write day-partitioned output and manifest.json here
+# (e.g. a local clone of ModelEarth/airports-output). Must be separate from inputs and OUTPUT.
+# PUBLISH_DIR: ../../airports-output

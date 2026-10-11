@@ -76,6 +76,46 @@ It does not invent ICAO codes by adding a `K` prefix. Ambiguous identifiers are
 excluded. Airports with no computed departures have no output row; absence does
 not mean zero actual emissions. Global totals can exceed selected-state totals.
 
+## Publishing day-partitioned output
+
+The generated data for this project is published to
+[ModelEarth/airports-output](https://github.com/ModelEarth/airports-output); consumers read it from
+there (and, later, the Cloudflare CDN) without running this pipeline. To regenerate or extend it:
+
+Set `PUBLISH_DIR` in the config (for example a local clone of
+[ModelEarth/airports-output](https://github.com/ModelEarth/airports-output)) and add
+`--publish` to also write a day-partitioned, consumer-friendly copy:
+
+```sh
+python emissions/process.py --config emissions/config.yaml --publish
+```
+
+This writes one folder per UTC departure date and merges a manifest:
+
+```text
+<PUBLISH_DIR>/emissions/
+  manifest.json
+  daily/YYYY-MM-DD/{flights.csv, routes.csv, airports.csv, report.json}
+```
+
+- **Idempotent.** Re-running a date replaces only that date's folder; other dates are
+  left untouched. `manifest.json` is merged, not overwritten, and its dates are sorted
+  ascending.
+- **`manifest.json`** records `generated_at`, the model settings, `latest` (most recent
+  date), and per date the flight count, total CO2 (kg), and the SHA-256 of each file.
+- **Size guard.** A written file over 50 MB prints a warning (GitHub's large-file
+  threshold); over 95 MB the run fails before publishing.
+- **Isolation.** `PUBLISH_DIR` must be separate from the input and `OUTPUT` directories;
+  raw OpenSky input is never written there, and the local `OUTPUT` behaviour is unchanged.
+
+Consumers read straight from the raw CDN URL — start with the manifest, then fetch the
+latest day's files:
+
+```text
+https://raw.githubusercontent.com/ModelEarth/airports-output/main/emissions/manifest.json
+https://raw.githubusercontent.com/ModelEarth/airports-output/main/emissions/daily/<date>/airports.csv
+```
+
 ## Method and limitations
 
 ```text

@@ -5,12 +5,19 @@ import glob
 import hashlib
 import json
 import math
+import shutil
 from collections import Counter, defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen
 
 import yaml
+
+FLIGHT_FIELDS = ["date", "icao24", "callsign", "firstSeen", "lastSeen", "dep", "arr", "distance_km", "fuel_kg", "co2_kg"]
+ROUTE_FIELDS = ["date", "dep", "arr", "flights", "co2_kg"]
+AIRPORT_FIELDS = ["date", "Country", "State", "FAA", "ICAO", "Airport", "Latitude", "Longitude", "Departures", "EstimatedCO2_kg"]
+PUBLISH_WARN_BYTES = 50 * 1024 * 1024   # GitHub's large-file warning threshold
+PUBLISH_FAIL_BYTES = 95 * 1024 * 1024   # just under GitHub's 100 MB hard limit
 
 
 def rows(path):
@@ -49,7 +56,77 @@ def unique_index(records, key):
     return {key: values[0] for key, values in groups.items() if len(values) == 1}
 
 
-def run(config_path, refresh=False):
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _guard_size(path):
+    """Warn past GitHub's 50 MB soft limit; fail past 95 MB. Returns the file size in bytes."""
+    size = path.stat().st_size
+    if size > PUBLISH_FAIL_BYTES:
+        raise ValueError(f"{path.name} is {size/1048576:.1f} MB, over the {PUBLISH_FAIL_BYTES//1048576} MB publish limit")
+    if size > PUBLISH_WARN_BYTES:
+        print(f"Warning: {path.name} is {size/1048576:.1f} MB, over GitHub's {PUBLISH_WARN_BYTES//1048576} MB warning threshold")
+    return size
+
+
+def publish_outputs(publish_dir, cfg, computed, routes, directory_outputs, input_dirs):
+    """Write one folder per UTC departure date under <publish_dir>/emissions/daily/YYYY-MM-DD/ and
+    merge the run into <publish_dir>/emissions/manifest.json. Only the dates in this run are
+    rewritten; other dates in an existing manifest are preserved. Returns a publish summary."""
+    emissions_root = publish_dir / "emissions"
+    daily_root = emissions_root / "daily"
+    if input_dirs & {publish_dir, emissions_root, daily_root}:
+        raise ValueError("PUBLISH_DIR must be separate from input and OUTPUT directories")
+    daily_root.mkdir(parents=True, exist_ok=True)
+
+    model = {k: cfg[k] for k in ("FUEL_KG_PER_KM", "FIXED_FUEL_KG", "CO2_KG_PER_KG_FUEL")}
+    flights_by_date, routes_by_date, airports_by_date = defaultdict(list), defaultdict(list), defaultdict(list)
+    for flight in computed:
+        flights_by_date[flight["date"]].append(flight)
+    for key in sorted(routes):
+        routes_by_date[routes[key]["date"]].append(routes[key])
+    for row in directory_outputs:
+        airports_by_date[row["date"]].append(row)
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    written = {}
+    for day in sorted(flights_by_date):
+        day_dir = daily_root / day
+        if day_dir.exists():
+            shutil.rmtree(day_dir)  # idempotent: re-running a date replaces only that date's folder
+        day_dir.mkdir(parents=True)
+        day_flights = flights_by_date[day]
+        total_co2 = sum(f["co2_kg"] for f in day_flights)
+        write_csv(day_dir / "flights.csv", FLIGHT_FIELDS, day_flights)
+        write_csv(day_dir / "routes.csv", ROUTE_FIELDS, routes_by_date.get(day, []))
+        write_csv(day_dir / "airports.csv", AIRPORT_FIELDS, airports_by_date.get(day, []))
+        (day_dir / "report.json").write_text(json.dumps(
+            dict(date=day, generated_at=generated_at, flights=len(day_flights), total_co2_kg=total_co2, model=model),
+            indent=2) + "\n", encoding="utf-8")
+        files = {}
+        for name in ("flights.csv", "routes.csv", "airports.csv", "report.json"):
+            path = day_dir / name
+            _guard_size(path)
+            files[name] = _sha256(path)
+        written[day] = dict(flights=len(day_flights), total_co2_kg=total_co2, files=files)
+
+    manifest_path = emissions_root / "manifest.json"
+    dates = {}
+    if manifest_path.exists():
+        try:
+            dates = json.loads(manifest_path.read_text(encoding="utf-8")).get("dates", {})
+        except (ValueError, OSError):
+            dates = {}
+    dates.update(written)  # merge: replace this run's dates, keep the rest
+    ordered = {day: dates[day] for day in sorted(dates)}
+    manifest = dict(generated_at=generated_at, model=model,
+                    latest=(max(ordered) if ordered else None), dates=ordered)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return dict(publish_dir=str(emissions_root), dates=sorted(written), latest=manifest["latest"])
+
+
+def run(config_path, refresh=False, publish=False):
     config_path = Path(config_path).resolve()
     cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     base = config_path.parent
@@ -162,9 +239,9 @@ def run(config_path, refresh=False):
     if any(output == p.parent for p in sources + [catalog_path] + directory_sources):
         raise ValueError("OUTPUT must be separate from input directories")
     output.mkdir(parents=True, exist_ok=True)
-    write_csv(output / "flights.csv", ["date", "icao24", "callsign", "firstSeen", "lastSeen", "dep", "arr", "distance_km", "fuel_kg", "co2_kg"], computed)
-    write_csv(output / "routes.csv", ["date", "dep", "arr", "flights", "co2_kg"], [routes[k] for k in sorted(routes)])
-    write_csv(output / "airports.csv", ["date", "Country", "State", "FAA", "ICAO", "Airport", "Latitude", "Longitude", "Departures", "EstimatedCO2_kg"], directory_outputs)
+    write_csv(output / "flights.csv", FLIGHT_FIELDS, computed)
+    write_csv(output / "routes.csv", ROUTE_FIELDS, [routes[k] for k in sorted(routes)])
+    write_csv(output / "airports.csv", AIRPORT_FIELDS, directory_outputs)
     report = dict(generated_at=datetime.now(timezone.utc).isoformat(), counts=dict(counts),
                   directory_airports_matched=matched, directory_airports_unmatched=unmatched,
                   total_co2_kg=sum(f["co2_kg"] for f in computed),
@@ -172,6 +249,11 @@ def run(config_path, refresh=False):
                   attribution="Each flight's estimated CO2 is attributed once, to its departure airport.",
                   sources=[dict(file=p.name, sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in [config_path, catalog_path]+sources+directory_sources])
     (output / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
+    if publish:
+        if not cfg.get("PUBLISH_DIR"):
+            raise ValueError("--publish needs PUBLISH_DIR set in the config")
+        input_dirs = {p.parent for p in sources} | {catalog_path.parent} | {p.parent for p in directory_sources} | {output}
+        report["published"] = publish_outputs(resolve(cfg["PUBLISH_DIR"]), cfg, computed, routes, directory_outputs, input_dirs)
     return report
 
 
@@ -179,9 +261,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.yaml"))
     parser.add_argument("--refresh-airports", action="store_true")
+    parser.add_argument("--publish", action="store_true",
+                        help="also write day-partitioned output and manifest.json to PUBLISH_DIR")
     args = parser.parse_args()
     try:
-        report = run(args.config, args.refresh_airports)
+        report = run(args.config, args.refresh_airports, args.publish)
     except (ValueError, KeyError, OSError, yaml.YAMLError) as exc:
         parser.exit(1, f"Emissions processing failed: {exc}\n")
     print(json.dumps(report["counts"], indent=2))
+    if report.get("published"):
+        print(json.dumps(report["published"], indent=2))
